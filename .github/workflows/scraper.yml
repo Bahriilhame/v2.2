@@ -32,4 +32,4 @@ jobs:
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: |
-          python scrape_stagiaires.py
+          python code.py
