@@ -62,7 +62,7 @@ LIMIT = 50
 DELAY = (0.5, 1.2)
 
 # Si l'API retourne 403, mettre True
-USE_BROWSER = False
+USE_BROWSER = True
 
 
 API = "https://api.stagiaires.ma/api/v1/public/annonces"
@@ -417,12 +417,154 @@ session.headers.update({
 })
 
 
+# _browser = {}
+
+
+# # ============================================================
+# # APPEL API
+# # ============================================================
+
+# def api_get(params):
+
+#     for attempt in range(5):
+
+#         try:
+
+#             # ------------------------------------------------
+#             # Mode navigateur
+#             # ------------------------------------------------
+
+#             if USE_BROWSER:
+
+#                 if "ctx" not in _browser:
+
+#                     from playwright.sync_api import sync_playwright
+
+#                     pw = sync_playwright().start()
+
+#                     browser = pw.chromium.launch(
+#                         headless=True
+#                     )
+
+#                     ctx = browser.new_context(
+#                         user_agent=UA
+#                     )
+
+#                     page = ctx.new_page()
+
+#                     page.goto(
+#                         "https://www.stagiaires.ma/stage-emploi-maroc",
+#                         wait_until="networkidle",
+#                         timeout=60000
+#                     )
+
+#                     _browser["ctx"] = ctx
+
+#                 response = _browser["ctx"].request.get(
+#                     API,
+#                     params=params
+#                 )
+
+#                 if response.ok:
+#                     return response.json()
+
+#                 status = response.status
+
+#             # ------------------------------------------------
+#             # Requests classique
+#             # ------------------------------------------------
+
+#             else:
+
+#                 response = session.get(
+#                     API,
+#                     params=params,
+#                     timeout=40
+#                 )
+
+#                 if response.status_code == 200:
+#                     return response.json()
+
+#                 status = response.status_code
+
+#             print(
+#                 f"   ! HTTP {status}, "
+#                 f"nouvelle tentative..."
+#             )
+
+#         except Exception as e:
+
+#             print(
+#                 f"   ! erreur réseau : {e}"
+#             )
+
+#         time.sleep(
+#             4 * (attempt + 1)
+#         )
+
+#     raise SystemExit(
+#         "\nAPI inaccessible.\n"
+#         "Essaie USE_BROWSER = True si tu reçois des 403."
+#     )
+
+
 _browser = {}
 
 
-# ============================================================
-# APPEL API
-# ============================================================
+def init_browser():
+    """
+    Initialise Chromium une seule fois.
+    Le navigateur ouvre d'abord le site Stagiaires.ma
+    afin d'obtenir une session/cookies avant d'appeler l'API.
+    """
+
+    if "ctx" in _browser:
+        return _browser["ctx"]
+
+    from playwright.sync_api import sync_playwright
+
+    print("   🌐 Initialisation du navigateur...")
+
+    pw = sync_playwright().start()
+
+    browser = pw.chromium.launch(
+        headless=True
+    )
+
+    ctx = browser.new_context(
+        user_agent=UA,
+        viewport={
+            "width": 1366,
+            "height": 768
+        },
+        locale="fr-FR",
+        timezone_id="Africa/Casablanca",
+    )
+
+    page = ctx.new_page()
+
+    print("   🌐 Ouverture de Stagiaires.ma...")
+
+    page.goto(
+        "https://www.stagiaires.ma/stage-emploi-maroc",
+        wait_until="domcontentloaded",
+        timeout=60000
+    )
+
+    # Petite attente pour laisser le site initialiser
+    page.wait_for_timeout(3000)
+
+    print(
+        f"   🌐 Page chargée : {page.title()}"
+    )
+
+    _browser["pw"] = pw
+    _browser["browser"] = browser
+    _browser["ctx"] = ctx
+    _browser["page"] = page
+
+    return ctx
+
 
 def api_get(params):
 
@@ -430,49 +572,41 @@ def api_get(params):
 
         try:
 
-            # ------------------------------------------------
-            # Mode navigateur
-            # ------------------------------------------------
+            # =================================================
+            # MODE PLAYWRIGHT
+            # =================================================
 
             if USE_BROWSER:
 
-                if "ctx" not in _browser:
+                ctx = init_browser()
 
-                    from playwright.sync_api import sync_playwright
+                print(
+                    f"   🌐 Requête API via navigateur "
+                    f"(tentative {attempt + 1}/5)..."
+                )
 
-                    pw = sync_playwright().start()
-
-                    browser = pw.chromium.launch(
-                        headless=True
-                    )
-
-                    ctx = browser.new_context(
-                        user_agent=UA
-                    )
-
-                    page = ctx.new_page()
-
-                    page.goto(
-                        "https://www.stagiaires.ma/stage-emploi-maroc",
-                        wait_until="networkidle",
-                        timeout=60000
-                    )
-
-                    _browser["ctx"] = ctx
-
-                response = _browser["ctx"].request.get(
+                response = ctx.request.get(
                     API,
-                    params=params
+                    params=params,
+                    headers={
+                        "Accept": "application/json",
+                        "Referer": "https://www.stagiaires.ma/",
+                    },
+                    timeout=60000,
+                )
+
+                status = response.status
+
+                print(
+                    f"   API HTTP {status}"
                 )
 
                 if response.ok:
                     return response.json()
 
-                status = response.status
-
-            # ------------------------------------------------
-            # Requests classique
-            # ------------------------------------------------
+            # =================================================
+            # MODE REQUESTS
+            # =================================================
 
             else:
 
@@ -482,15 +616,14 @@ def api_get(params):
                     timeout=40
                 )
 
-                if response.status_code == 200:
-                    return response.json()
-
                 status = response.status_code
 
-            print(
-                f"   ! HTTP {status}, "
-                f"nouvelle tentative..."
-            )
+                if status == 200:
+                    return response.json()
+
+                print(
+                    f"   ! HTTP {status}"
+                )
 
         except Exception as e:
 
@@ -498,14 +631,22 @@ def api_get(params):
                 f"   ! erreur réseau : {e}"
             )
 
-        time.sleep(
-            4 * (attempt + 1)
-        )
+        if attempt < 4:
+
+            wait = 4 * (attempt + 1)
+
+            print(
+                f"   Attente {wait}s avant nouvelle tentative..."
+            )
+
+            time.sleep(wait)
 
     raise SystemExit(
-        "\nAPI inaccessible.\n"
-        "Essaie USE_BROWSER = True si tu reçois des 403."
+        "\nAPI inaccessible après plusieurs tentatives."
     )
+
+
+
 
 
 # ============================================================
