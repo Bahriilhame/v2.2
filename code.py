@@ -56,15 +56,6 @@ CITIES = {
     "Bouznika": 87753,
 }
 
-CITY_SLUGS = {
-    87750: "casablanca",
-    87607: "rabat",
-    87594: "sale",
-    87667: "kenitra",
-    87643: "mohammedia",
-    87753: "bouznika",
-}
-
 LIMIT = 50
 
 # Petite pause entre les requêtes
@@ -670,6 +661,7 @@ session.headers.update({
 
 
 _browser = {}
+_api_blocked = False
 
 
 def init_browser():
@@ -729,6 +721,13 @@ def init_browser():
 
 def api_get(params):
 
+    global _api_blocked
+
+    if _api_blocked:
+        raise ApiUnavailable(
+            "API déjà détectée comme bloquée."
+        )
+
     for attempt in range(5):
 
         try:
@@ -765,6 +764,9 @@ def api_get(params):
                 if response.ok:
                     return response.json()
 
+                if status == 403:
+                    _api_blocked = True
+
             # =================================================
             # MODE REQUESTS
             # =================================================
@@ -782,9 +784,15 @@ def api_get(params):
                 if status == 200:
                     return response.json()
 
+                if status == 403:
+                    _api_blocked = True
+
                 print(
                     f"   ! HTTP {status}"
                 )
+
+            if _api_blocked:
+                break
 
         except Exception as e:
 
@@ -977,27 +985,66 @@ def extract_detail_description(page):
 
 def fetch_city_from_site(city_id):
 
-    slug = CITY_SLUGS.get(city_id)
-
-    if not slug:
+    if not city_label_from_id(city_id):
         raise ApiUnavailable(
-            f"Aucun slug web configuré pour city={city_id}."
+            f"Aucune ville configurée pour city={city_id}."
         )
 
     page = get_browser_page()
-    url = f"https://www.stagiaires.ma/stage-emploi-ville/{slug}"
+    urls = [
+        (
+            f"https://www.stagiaires.ma/stage-emploi-maroc?ville={city_id}",
+            True,
+        ),
+        (
+            "https://www.stagiaires.ma/stage-emploi-maroc",
+            True,
+        ),
+    ]
 
-    print(
-        "   🌐 Fallback page web : "
-        f"{url}"
-    )
+    items = []
+
+    for url, filter_city in urls:
+
+        print(
+            "   🌐 Fallback page web : "
+            f"{url}"
+        )
+
+        items = fetch_cards_from_listing_page(
+            page,
+            url,
+            city_id,
+            filter_city,
+        )
+
+        if items:
+            return items
+
+        print(
+            "   -> aucune carte exploitable avec cette URL"
+        )
+
+    return items
+
+
+def fetch_cards_from_listing_page(
+    page,
+    url,
+    city_id,
+    filter_city,
+):
+
+    city_label = city_label_from_id(city_id)
 
     page.goto(
         url,
         wait_until="domcontentloaded",
         timeout=60000,
     )
-    page.wait_for_timeout(2500)
+    page.wait_for_timeout(3500)
+
+    log_empty_page_hint(page)
 
     items = []
     seen_keys = set()
@@ -1013,6 +1060,13 @@ def fetch_city_from_site(city_id):
         )
 
         for card in cards:
+
+            if (
+                filter_city
+                and
+                norm(card.get("ville", "")) != norm(city_label)
+            ):
+                continue
 
             key = (
                 norm(card.get("titre", "")),
@@ -1056,6 +1110,38 @@ def fetch_city_from_site(city_id):
         )
 
     return items
+
+
+def city_label_from_id(city_id):
+
+    for label, current_id in CITIES.items():
+
+        if current_id == city_id:
+            return label
+
+    return ""
+
+
+def log_empty_page_hint(page):
+
+    try:
+
+        if page.locator('[data-slot="card"]').count():
+            return
+
+        text = page.locator("body").inner_text(timeout=10000)
+        text = " ".join(text.split())
+
+        print(
+            "   aperçu page vide : "
+            f"{text[:220]}"
+        )
+
+    except Exception as e:
+
+        print(
+            f"   ! impossible de lire la page vide : {e}"
+        )
 
 
 
