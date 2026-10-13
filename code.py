@@ -56,6 +56,15 @@ CITIES = {
     "Bouznika": 87753,
 }
 
+CITY_SLUGS = {
+    87750: "casablanca",
+    87607: "rabat",
+    87594: "sale",
+    87667: "kenitra",
+    87643: "mohammedia",
+    87753: "bouznika",
+}
+
 LIMIT = 50
 
 # Petite pause entre les requêtes
@@ -312,8 +321,13 @@ TITLE_IT_KEYWORDS = [
         "erp",
         "automation",
         "automatisation",
+        "reseau",
+        "reseaux",
+        "network",
         "systeme",
         "systems",
+        "soc",
+        "development",
         "oracle",
         "sage",
         "dynamics",
@@ -383,6 +397,8 @@ STRONG_DESCRIPTION_KEYWORDS = [
     "qa",
     "test logiciel",
     "software testing",
+    "technical support",
+    "support engineer",
     "android",
     "ios",
     "flutter",
@@ -420,6 +436,7 @@ IT_TITLE_PATTERNS = [
     r"\bit\b",
     r"\bbi\b",
     r"\bqa\b",
+    r"\bsoc\b",
     r"\bui\s*/?\s*ux\b",
 ]
 
@@ -672,12 +689,7 @@ def init_browser():
     pw = sync_playwright().start()
 
     browser = pw.chromium.launch(
-        headless=True,
-        args=[
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-        ],
+        headless=True
     )
 
     ctx = browser.new_context(
@@ -688,18 +700,6 @@ def init_browser():
         },
         locale="fr-FR",
         timezone_id="Africa/Casablanca",
-        extra_http_headers={
-            "Accept": (
-                "text/html,application/xhtml+xml,application/xml;"
-                "q=0.9,image/avif,image/webp,*/*;q=0.8"
-            ),
-            "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Upgrade-Insecure-Requests": "1",
-        },
-    )
-
-    ctx.add_init_script(
-        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
     )
 
     page = ctx.new_page()
@@ -807,6 +807,256 @@ def api_get(params):
     )
 
 
+def get_browser_page():
+
+    init_browser()
+
+    return _browser["page"]
+
+
+def visible_cards_from_page(page):
+
+    return page.evaluate(
+        """
+        () => Array.from(
+            document.querySelectorAll('[data-slot="card"]')
+        ).map((card, index) => {
+            const lines = (card.innerText || '')
+                .split('\\n')
+                .map((line) => line.trim())
+                .filter(Boolean);
+
+            if (
+                lines.length < 6
+                ||
+                !lines.includes('Voir')
+            ) {
+                return null;
+            }
+
+            return {
+                index,
+                titre: lines[0] || '',
+                entreprise: {nom: lines[1] || ''},
+                ville: lines[2] || '',
+                type_stage: lines[3] || '',
+                type_de_lieu_de_travail: lines[4] || '',
+                description: lines.join(' '),
+                lien_publique: '',
+                lien_annonce: '',
+            };
+        }).filter(Boolean)
+        """
+    )
+
+
+def has_next_dom_page(page):
+
+    return page.evaluate(
+        """
+        () => {
+            const next = Array.from(
+                document.querySelectorAll('a, button')
+            ).find((el) => (el.innerText || '').trim() === 'Suivant');
+
+            if (!next) {
+                return false;
+            }
+
+            const classes = String(
+                next.getAttribute('class') || ''
+            ).split(/\\s+/);
+
+            return (
+                !next.disabled
+                &&
+                !classes.includes('pointer-events-none')
+                &&
+                !classes.includes('opacity-50')
+            );
+        }
+        """
+    )
+
+
+def click_next_dom_page(page):
+
+    first_title = ""
+
+    cards = visible_cards_from_page(page)
+
+    if cards:
+        first_title = cards[0].get("titre", "")
+
+    page.get_by_text("Suivant", exact=True).click()
+
+    if first_title:
+        page.wait_for_function(
+            """
+            (oldTitle) => {
+                const card = document.querySelector('[data-slot="card"]');
+                return card && !card.innerText.includes(oldTitle);
+            }
+            """,
+            arg=first_title,
+            timeout=30000,
+        )
+    else:
+        page.wait_for_timeout(1500)
+
+
+def enrich_offer_url(page, card_index):
+
+    cards = page.locator('[data-slot="card"]')
+    card = cards.nth(card_index)
+    current_url = page.url
+
+    try:
+        card.click(timeout=10000)
+        page.wait_for_url(
+            lambda url: url != current_url,
+            timeout=15000,
+        )
+
+        url = page.url
+        detail_text = extract_detail_description(page)
+
+        page.go_back(
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+        page.wait_for_timeout(1000)
+
+        return url, detail_text
+
+    except Exception as e:
+
+        print(
+            f"   ! URL détail indisponible : {e}"
+        )
+
+        try:
+            if page.url != current_url:
+                page.goto(
+                    current_url,
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
+                page.wait_for_timeout(1000)
+        except Exception:
+            pass
+
+    return "", ""
+
+
+def extract_detail_description(page):
+
+    text = page.locator("body").inner_text(timeout=10000)
+
+    if "Description du poste" in text:
+        text = text.split(
+            "Description du poste",
+            1
+        )[1]
+
+    for marker in [
+        "Profil recherché",
+        "Postuler maintenant",
+        "Plateforme de stages",
+        "Nous contacter",
+        "RECHERCHE AVANCÉE",
+    ]:
+        if marker in text:
+            text = text.split(
+                marker,
+                1
+            )[0]
+
+    return text[:2500]
+
+
+def fetch_city_from_site(city_id):
+
+    slug = CITY_SLUGS.get(city_id)
+
+    if not slug:
+        raise ApiUnavailable(
+            f"Aucun slug web configuré pour city={city_id}."
+        )
+
+    page = get_browser_page()
+    url = f"https://www.stagiaires.ma/stage-emploi-ville/{slug}"
+
+    print(
+        "   🌐 Fallback page web : "
+        f"{url}"
+    )
+
+    page.goto(
+        url,
+        wait_until="domcontentloaded",
+        timeout=60000,
+    )
+    page.wait_for_timeout(2500)
+
+    items = []
+    seen_keys = set()
+    page_number = 1
+
+    while True:
+
+        cards = visible_cards_from_page(page)
+
+        print(
+            f"   page web {page_number}: "
+            f"{len(cards)} cartes"
+        )
+
+        for card in cards:
+
+            key = (
+                norm(card.get("titre", "")),
+                norm(
+                    (
+                        card.get("entreprise")
+                        or
+                        {}
+                    ).get("nom", "")
+                ),
+                norm(card.get("ville", "")),
+            )
+
+            if key in seen_keys:
+                continue
+
+            seen_keys.add(key)
+
+            if is_it_offer(card):
+
+                detail_url, detail_text = enrich_offer_url(
+                    page,
+                    card["index"],
+                )
+
+                if detail_url:
+                    card["lien_publique"] = detail_url
+
+                if detail_text:
+                    card["description"] = detail_text
+
+            items.append(card)
+
+        if not has_next_dom_page(page):
+            break
+
+        click_next_dom_page(page)
+        page_number += 1
+        time.sleep(
+            random.uniform(*DELAY)
+        )
+
+    return items
+
 
 
 
@@ -818,25 +1068,42 @@ def fetch_city(city_id):
 
     items = []
     offset = 0
+    used_fallback = False
 
     while True:
 
-        data = api_get({
+        try:
 
-            "limit": LIMIT,
+            data = api_get({
 
-            "offset": offset,
+                "limit": LIMIT,
 
-            "statut": "Validée",
+                "offset": offset,
 
-            "entreprise_valid": "true",
+                "statut": "Validée",
 
-            "city": city_id,
+                "entreprise_valid": "true",
 
-            "sortBy": "date_publication",
+                "city": city_id,
 
-            "order": "DESC",
-        })
+                "sortBy": "date_publication",
+
+                "order": "DESC",
+            })
+
+        except ApiUnavailable:
+
+            if offset == 0 and USE_BROWSER:
+
+                print(
+                    "   API bloquée, passage au scraping page web..."
+                )
+
+                items = fetch_city_from_site(city_id)
+                used_fallback = True
+                break
+
+            raise
 
         batch = data.get(
             "data",
@@ -869,6 +1136,9 @@ def fetch_city(city_id):
         time.sleep(
             random.uniform(*DELAY)
         )
+
+    if used_fallback:
+        return items
 
     return items
 
@@ -1253,17 +1523,8 @@ def main():
             "La Sheet reste inchangée."
         )
 
-        if os.getenv("GITHUB_ACTIONS"):
-
-            print(
-                "Exécution GitHub Actions terminée sans mise à jour : "
-                "Stagiaires.ma bloque probablement l'IP GitHub."
-            )
-
-            return
-
         raise SystemExit(
-            "API inaccessible après plusieurs tentatives."
+            "Aucune offre récupérée : API et fallback page web indisponibles."
         )
 
     # ========================================================
