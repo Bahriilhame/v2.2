@@ -70,8 +70,12 @@ API = "https://api.stagiaires.ma/api/v1/public/annonces"
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/124.0 Safari/537.36"
+    "Chrome/141.0.0.0 Safari/537.36"
 )
+
+
+class ApiUnavailable(Exception):
+    pass
 
 
 # ============================================================
@@ -291,11 +295,137 @@ IT_KEYWORDS = [
     "bitbucket",
 ]
 
+TITLE_IT_KEYWORDS = [
+    keyword
+    for keyword in IT_KEYWORDS
+    if keyword not in {
+        "si",
+        "it",
+        "ia",
+        "bi",
+        "web",
+        "api",
+        "git",
+        "qa",
+        "sql",
+        "crm",
+        "erp",
+        "automation",
+        "automatisation",
+        "systeme",
+        "systems",
+        "oracle",
+        "sage",
+        "dynamics",
+    }
+]
+
+STRONG_DESCRIPTION_KEYWORDS = [
+    "informatique",
+    "systeme d'information",
+    "systemes d'information",
+    "developpeur",
+    "developpeuse",
+    "developer",
+    "software",
+    "logiciel",
+    "programmation",
+    "application web",
+    "application mobile",
+    "python",
+    "java",
+    "javascript",
+    "typescript",
+    "php",
+    "laravel",
+    "symfony",
+    "node.js",
+    "nodejs",
+    "react",
+    "angular",
+    "vue",
+    ".net",
+    "c#",
+    "c++",
+    "intelligence artificielle",
+    "artificial intelligence",
+    "machine learning",
+    "deep learning",
+    "llm",
+    "nlp",
+    "computer vision",
+    "tensorflow",
+    "pytorch",
+    "data science",
+    "data scientist",
+    "data analyst",
+    "data engineer",
+    "big data",
+    "business intelligence",
+    "power bi",
+    "etl",
+    "sql",
+    "nosql",
+    "base de donnees",
+    "cloud",
+    "aws",
+    "azure",
+    "gcp",
+    "devops",
+    "mlops",
+    "docker",
+    "kubernetes",
+    "cybersecurite",
+    "cybersecurity",
+    "securite informatique",
+    "administrateur systeme",
+    "administrateur reseau",
+    "qa",
+    "test logiciel",
+    "software testing",
+    "android",
+    "ios",
+    "flutter",
+    "react native",
+    "api",
+    "microservices",
+]
+
+WEAK_DESCRIPTION_KEYWORDS = [
+    "web",
+    "site web",
+    "internet",
+    "excel",
+    "word",
+    "powerpoint",
+    "reseaux sociaux",
+    "digital",
+    "numerique",
+    "crm",
+    "erp",
+    "sap",
+    "odoo",
+    "salesforce",
+    "automatisation",
+    "automation",
+    "git",
+    "github",
+]
+
+IT_TITLE_PATTERNS = [
+    r"\bdata\b",
+    r"\bdev\b",
+    r"\bia\b",
+    r"\bai\b",
+    r"\bit\b",
+    r"\bbi\b",
+    r"\bqa\b",
+    r"\bui\s*/?\s*ux\b",
+]
+
 
 # Mots qui indiquent généralement une offre
 # clairement hors informatique.
-# Ils ne bloquent PAS automatiquement une offre :
-# ils servent uniquement à éviter certains faux positifs.
 
 NON_IT_KEYWORDS = [
     "comptabilite",
@@ -322,6 +452,35 @@ NON_IT_KEYWORDS = [
     "achat",
     "achats",
     "qualite alimentaire",
+    "agroalimentaire",
+    "gestion administrative",
+    "administratif",
+    "assistanat",
+    "assistant",
+    "office manager",
+    "community manager",
+    "community management",
+    "reseaux sociaux",
+    "design graphique",
+    "graphisme",
+    "infographie",
+    "video",
+    "photographie",
+    "evenementiel",
+    "journalisme",
+    "tourisme",
+    "hotellerie",
+    "restauration",
+    "supply chain",
+    "transport",
+    "genie civil",
+    "btp",
+    "immobilier",
+    "banque",
+    "assurance",
+    "sante",
+    "medical",
+    "pharmacie",
 ]
 
 
@@ -338,42 +497,29 @@ def is_it_offer(a):
         strip_html(a.get("description", ""))
     )
 
-    # --------------------------------------------------------
-    # 1. Recherche dans le titre
-    # --------------------------------------------------------
-
     title_matches = [
         keyword
-        for keyword in IT_KEYWORDS
+        for keyword in TITLE_IT_KEYWORDS
         if keyword in title
     ]
 
-    # --------------------------------------------------------
-    # 2. Recherche dans la description
-    # --------------------------------------------------------
+    title_pattern_matches = [
+        pattern
+        for pattern in IT_TITLE_PATTERNS
+        if re.search(pattern, title)
+    ]
 
-    description_matches = [
+    strong_description_matches = [
         keyword
-        for keyword in IT_KEYWORDS
+        for keyword in STRONG_DESCRIPTION_KEYWORDS
         if keyword in description
     ]
 
-    # --------------------------------------------------------
-    # 3. Score
-    #
-    # Un mot informatique dans le titre = 3 points
-    # Un mot informatique dans la description = 1 point
-    # --------------------------------------------------------
-
-    score = (
-        len(set(title_matches)) * 3
-        +
-        len(set(description_matches))
-    )
-
-    # --------------------------------------------------------
-    # 4. Détection des domaines clairement hors IT
-    # --------------------------------------------------------
+    weak_description_matches = [
+        keyword
+        for keyword in WEAK_DESCRIPTION_KEYWORDS
+        if keyword in description
+    ]
 
     non_it_matches = [
         keyword
@@ -381,23 +527,21 @@ def is_it_offer(a):
         if keyword in title
     ]
 
-    # --------------------------------------------------------
-    # 5. Décision
-    # --------------------------------------------------------
-
-    # Si le titre contient un mot IT :
-    # on accepte quasiment toujours.
-    if title_matches:
+    if title_matches or title_pattern_matches:
         return True
 
-    # Si le titre est hors domaine ET qu'il n'y a
-    # pratiquement aucun signal informatique :
-    if non_it_matches and score < 3:
+    strong_count = len(set(strong_description_matches))
+    weak_count = len(set(weak_description_matches))
+
+    # RH/communication/finance/etc. restent exclus sauf si
+    # le titre annonce clairement une fonction IT.
+    if non_it_matches:
         return False
 
-    # Si plusieurs éléments IT apparaissent
-    # dans la description, on garde.
-    if score >= 3:
+    if strong_count >= 2:
+        return True
+
+    if strong_count >= 1 and weak_count >= 2 and not non_it_matches:
         return True
 
     return False
@@ -528,7 +672,12 @@ def init_browser():
     pw = sync_playwright().start()
 
     browser = pw.chromium.launch(
-        headless=True
+        headless=True,
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+        ],
     )
 
     ctx = browser.new_context(
@@ -539,6 +688,18 @@ def init_browser():
         },
         locale="fr-FR",
         timezone_id="Africa/Casablanca",
+        extra_http_headers={
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;"
+                "q=0.9,image/avif,image/webp,*/*;q=0.8"
+            ),
+            "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Upgrade-Insecure-Requests": "1",
+        },
+    )
+
+    ctx.add_init_script(
+        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
     )
 
     page = ctx.new_page()
@@ -641,8 +802,8 @@ def api_get(params):
 
             time.sleep(wait)
 
-    raise SystemExit(
-        "\nAPI inaccessible après plusieurs tentatives."
+    raise ApiUnavailable(
+        "API inaccessible après plusieurs tentatives."
     )
 
 
@@ -950,9 +1111,25 @@ def main():
             f"(city={city_id}) =="
         )
 
-        items = fetch_city(
-            city_id
-        )
+        try:
+
+            items = fetch_city(
+                city_id
+            )
+
+        except ApiUnavailable as e:
+
+            print(
+                f"   ! {e}"
+            )
+
+            print(
+                "   -> Ville ignorée pour cette exécution."
+            )
+
+            print()
+
+            continue
 
         total_scraped += len(items)
 
@@ -1068,6 +1245,26 @@ def main():
     print(
         "======================================"
     )
+
+    if total_scraped == 0:
+
+        print(
+            "\nAucune offre récupérée. "
+            "La Sheet reste inchangée."
+        )
+
+        if os.getenv("GITHUB_ACTIONS"):
+
+            print(
+                "Exécution GitHub Actions terminée sans mise à jour : "
+                "Stagiaires.ma bloque probablement l'IP GitHub."
+            )
+
+            return
+
+        raise SystemExit(
+            "API inaccessible après plusieurs tentatives."
+        )
 
     # ========================================================
     # AJOUT DANS GOOGLE SHEETS
